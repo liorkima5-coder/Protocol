@@ -1,0 +1,5 @@
+Flask
+docxtpl
+python-docx
+Jinja2
+gunicorn  # נדרש כדי ש-Render יפעיל את השרת
