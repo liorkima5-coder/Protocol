@@ -18,7 +18,7 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyoziY3lj7DKLV2P9Orf-1tqxRJ4iT-TobTXMhNGJFJNECi2Axv-cOVeaQ8VfMolQIt/exec"
 
 # --- כאן מדביקים את המפתח מהאתר ---
-convertapi.api_secret = 'qLtjIKOCji53kJoDAv5Xm9vNu3sjVUAu' 
+convertapi.api_secret = '94Ojndri3QUnbryARSQyTD3TuubjuqLs' 
 # ---------------------------------------------------------
 
 def update_google_sheet_with_file(project, subject, date_val, file_path):
@@ -242,4 +242,5 @@ def serve_logo():
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
+
 
