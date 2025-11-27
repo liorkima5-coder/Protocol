@@ -2,10 +2,13 @@ import os
 import json
 import requests
 import base64
+import pythoncom
+from datetime import datetime  # <-- תוספת חשובה לתאריך ושעה
 from flask import Flask, render_template_string, request, send_file
 from docxtpl import DocxTemplate, InlineImage
 from docx.shared import Mm
 from werkzeug.utils import secure_filename
+from docx2pdf import convert
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = "uploads"
@@ -34,6 +37,10 @@ def update_google_sheet_with_file(project, subject, date_val, file_path):
     except Exception as e:
         print(f"Error updating Google Sheet: {e}")
 
+def clean_text(text):
+    # שומר רק אותיות, מספרים, רווחים ומקפים
+    return "".join(c for c in text if c.isalnum() or c in (' ', '-', '_')).strip()
+
 # ---------- HTML של הטופס ----------
 HTML_FORM = """
 <!DOCTYPE html>
@@ -49,13 +56,19 @@ HTML_FORM = """
     .logo-container img { max-height: 80px; }
     h2, h3 { color: #1565c0; text-align: center; margin-top: 0; }
     label { font-weight: bold; font-size: 14px; margin-top: 10px; display: block; color: #555; }
-    input, textarea, select { width: 100%; box-sizing: border-box; margin-bottom: 15px; padding: 12px; font-size: 16px; border: 1px solid #ddd; border-radius: 8px; background-color: #fdfdfd; transition: border-color 0.3s; }
+    input, textarea, select { width: 100%; box-sizing: border-box; margin-bottom: 15px; padding: 12px; font-size: 16px; border: 1px solid #ddd; border-radius: 8px; background-color: #fdfdfd; transition: border-color 0.3s; font-family: inherit; }
     input:focus, textarea:focus { border-color: #1976d2; outline: none; }
-    button { width: 100%; padding: 14px; font-size: 18px; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; transition: background 0.3s; }
+    button { width: 100%; padding: 14px; font-size: 18px; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; transition: background 0.3s; margin-bottom: 10px; }
     .add-row-btn { background-color: #4caf50; color: white; margin-bottom: 20px; }
     .add-row-btn:hover { background-color: #388e3c; }
-    .submit-btn { background-color: #1976d2; color: white; margin-top: 10px; }
-    .submit-btn:hover { background-color: #0d47a1; }
+    
+    /* כפתורי שליחה */
+    .submit-btn-docx { background-color: #1976d2; color: white; }
+    .submit-btn-docx:hover { background-color: #0d47a1; }
+    
+    .submit-btn-pdf { background-color: #d32f2f; color: white; }
+    .submit-btn-pdf:hover { background-color: #b71c1c; }
+
     .dynamic-row { background: #f1f8e9; padding: 15px; border-radius: 8px; margin-bottom: 10px; border: 1px solid #c5e1a5; }
     .footer { text-align: center; font-size: 12px; color: #777; margin-top: 30px; padding: 10px; }
 </style>
@@ -73,14 +86,29 @@ HTML_FORM = """
         if (!saved) return;
         const formData = JSON.parse(saved);
         if (formData['dynamic_rows_count']) { for (let i = 0; i < formData['dynamic_rows_count']; i++) { addRow(); } }
-        for (const [key, value] of Object.entries(formData)) { const el = document.getElementsByName(key)[0]; if (el) el.value = value; }
+        for (const [key, value] of Object.entries(formData)) { 
+            const el = document.getElementsByName(key)[0]; 
+            if (el) el.value = value; 
+        }
     }
+    
     function addRow() {
         const container = document.getElementById('rows');
         const index = container.children.length + 1;
         const div = document.createElement('div');
         div.className = 'dynamic-row';
-        div.innerHTML = `<label>#${index} נושא:</label><input name="topic_${index}" oninput="saveFormData()"><label>מהות:</label><input name="essence_${index}" oninput="saveFormData()"><label>הערות:</label><input name="remarks_${index}" oninput="saveFormData()"><input type="hidden" name="id_${index}" value="${index}">`;
+        div.innerHTML = `
+            <label>#${index} נושא:</label>
+            <input name="topic_${index}" oninput="saveFormData()">
+            
+            <label>מהות:</label>
+            <textarea name="essence_${index}" rows="3" oninput="saveFormData()"></textarea>
+            
+            <label>הערות:</label>
+            <input name="remarks_${index}" oninput="saveFormData()">
+            
+            <input type="hidden" name="id_${index}" value="${index}">
+        `;
         container.appendChild(div);
         saveFormData();
     }
@@ -102,12 +130,19 @@ HTML_FORM = """
         <label>העתקים:</label><textarea name="copies" rows="2"></textarea>
         <label>אופן הפגישה:</label><input name="meeting_type">
         <label>רשם:</label><input name="recorder">
+        
         <h3>סיכום פגישה</h3>
         <div id="rows"></div>
         <button type="button" class="add-row-btn" onclick="addRow()">➕ הוסף שורה</button>
+        
         <h3>העלאת תמונות</h3>
         <input type="file" name="images" accept="image/*" multiple style="background:none; border:none;">
-        <button type="submit" class="submit-btn">📄 צור דו"ח והורד</button>
+        
+        <h3>סיום והורדה</h3>
+        <div style="display: flex; gap: 10px;">
+            <button type="submit" name="file_type" value="docx" class="submit-btn-docx">📘 הורד כ-Word</button>
+            <button type="submit" name="file_type" value="pdf" class="submit-btn-pdf">📕 הורד כ-PDF</button>
+        </div>
       </form>
       <div class="footer">עוצב ופותח על ידי ליאור קימה</div>
   </div>
@@ -128,7 +163,8 @@ def index():
         # איסוף הנתונים
         project_name = request.form.get("project_name", "")
         meeting_subject = request.form.get("meeting_subject", "")
-        date_str = request.form.get("date", "") # מגיע בפורמט YYYY-MM-DD
+        date_str = request.form.get("date", "") 
+        requested_file_type = request.form.get("file_type", "docx")
 
         context = {
             "project_name": project_name,
@@ -162,30 +198,44 @@ def index():
                     images.append(InlineImage(doc, path, width=Mm(80)))
         context["images"] = images
 
-        # --- שינוי שם הקובץ (החלק המעודכן) ---
-        def clean_text(text):
-            # שומר רק אותיות, מספרים, רווחים ומקפים
-            return "".join(c for c in text if c.isalnum() or c in (' ', '-', '_')).strip()
-
+        # יצירת שמות קבצים ייחודיים (כולל שעה)
         safe_project = clean_text(project_name)
         safe_subject = clean_text(meeting_subject)
         
-        # הפורמט: פרויקט + נושא + תאריך
-        output_path = f"{safe_project} - {safe_subject} - {date_str}.docx"
+        # --- תוספת: חותמת זמן למניעת PermissionError ---
+        timestamp = datetime.now().strftime("%H-%M-%S")
+        
+        base_filename = f"{safe_project} - {safe_subject} - {date_str} ({timestamp})"
+        docx_path = os.path.abspath(f"{base_filename}.docx")
 
+        # שמירת מסמך ה-Word
         doc.render(context)
-        doc.save(output_path)
+        doc.save(docx_path)
+
+        final_file_path = docx_path
+        
+        # אם המשתמש ביקש PDF
+        if requested_file_type == "pdf":
+            try:
+                pdf_path = os.path.abspath(f"{base_filename}.pdf")
+                pythoncom.CoInitialize() 
+                convert(docx_path, pdf_path)
+                final_file_path = pdf_path
+            except Exception as e:
+                return f"שגיאה ביצירת PDF (וודא ש-Word מותקן): {e}", 500
 
         # עדכון גוגל שיטס ושמירה בדרייב
-        update_google_sheet_with_file(project_name, meeting_subject, date_str, output_path)
+        update_google_sheet_with_file(project_name, meeting_subject, date_str, final_file_path)
 
-        return send_file(output_path, as_attachment=True)
+        return send_file(final_file_path, as_attachment=True)
 
     return render_template_string(HTML_FORM)
 
 @app.route('/hs.jpg')
 def serve_logo():
-    return send_file('hs.jpg')
+    if os.path.exists('hs.jpg'):
+        return send_file('hs.jpg')
+    return "Logo not found", 404
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
