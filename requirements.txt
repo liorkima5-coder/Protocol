@@ -1,6 +1,8 @@
 flask
+requests
 docxtpl
 python-docx
-requests
-gunicorn
+docx2pdf
+pywin32
+pillow
 werkzeug
