@@ -2,7 +2,6 @@ flask
 requests
 docxtpl
 python-docx
-docx2pdf
-pywin32
 pillow
 werkzeug
+convertapi
