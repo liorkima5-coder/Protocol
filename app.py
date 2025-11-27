@@ -1,25 +1,28 @@
 import os
-import json
 import requests
 import base64
-import pythoncom
-from datetime import datetime  # <-- תוספת חשובה לתאריך ושעה
+from datetime import datetime
 from flask import Flask, render_template_string, request, send_file
 from docxtpl import DocxTemplate, InlineImage
 from docx.shared import Mm
 from werkzeug.utils import secure_filename
-from docx2pdf import convert
+import convertapi  # הספרייה להמרה
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = "uploads"
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-# --- הקישור לסקריפט שלך ---
+# ---------------------------------------------------------
+# הגדרות חובה
+# ---------------------------------------------------------
 APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyoziY3lj7DKLV2P9Orf-1tqxRJ4iT-TobTXMhNGJFJNECi2Axv-cOVeaQ8VfMolQIt/exec"
+
+# --- כאן מדביקים את המפתח מהאתר ---
+convertapi.api_secret = 'YOUR_SECRET_HERE' 
+# ---------------------------------------------------------
 
 def update_google_sheet_with_file(project, subject, date_val, file_path):
     try:
-        # קריאת הקובץ והמרה ל-Base64
         with open(file_path, "rb") as f:
             file_content = base64.b64encode(f.read()).decode("utf-8")
 
@@ -38,7 +41,6 @@ def update_google_sheet_with_file(project, subject, date_val, file_path):
         print(f"Error updating Google Sheet: {e}")
 
 def clean_text(text):
-    # שומר רק אותיות, מספרים, רווחים ומקפים
     return "".join(c for c in text if c.isalnum() or c in (' ', '-', '_')).strip()
 
 # ---------- HTML של הטופס ----------
@@ -62,7 +64,6 @@ HTML_FORM = """
     .add-row-btn { background-color: #4caf50; color: white; margin-bottom: 20px; }
     .add-row-btn:hover { background-color: #388e3c; }
     
-    /* כפתורי שליחה */
     .submit-btn-docx { background-color: #1976d2; color: white; }
     .submit-btn-docx:hover { background-color: #0d47a1; }
     
@@ -100,13 +101,10 @@ HTML_FORM = """
         div.innerHTML = `
             <label>#${index} נושא:</label>
             <input name="topic_${index}" oninput="saveFormData()">
-            
             <label>מהות:</label>
             <textarea name="essence_${index}" rows="3" oninput="saveFormData()"></textarea>
-            
             <label>הערות:</label>
             <input name="remarks_${index}" oninput="saveFormData()">
-            
             <input type="hidden" name="id_${index}" value="${index}">
         `;
         container.appendChild(div);
@@ -198,31 +196,36 @@ def index():
                     images.append(InlineImage(doc, path, width=Mm(80)))
         context["images"] = images
 
-        # יצירת שמות קבצים ייחודיים (כולל שעה)
+        # יצירת שמות קבצים
         safe_project = clean_text(project_name)
         safe_subject = clean_text(meeting_subject)
-        
-        # --- תוספת: חותמת זמן למניעת PermissionError ---
         timestamp = datetime.now().strftime("%H-%M-%S")
         
         base_filename = f"{safe_project} - {safe_subject} - {date_str} ({timestamp})"
         docx_path = os.path.abspath(f"{base_filename}.docx")
-
-        # שמירת מסמך ה-Word
+        
+        # קודם כל שומרים כ-Word (חובה בשביל ההמרה)
         doc.render(context)
         doc.save(docx_path)
 
         final_file_path = docx_path
         
-        # אם המשתמש ביקש PDF
+        # --- המרה ל-PDF אם התבקש ---
         if requested_file_type == "pdf":
             try:
                 pdf_path = os.path.abspath(f"{base_filename}.pdf")
-                pythoncom.CoInitialize() 
-                convert(docx_path, pdf_path)
+                print("Converting to PDF using ConvertAPI...")
+                
+                # ביצוע ההמרה
+                convertapi.convert('pdf', {
+                    'File': docx_path
+                }, from_format='docx').save_files(pdf_path)
+                
                 final_file_path = pdf_path
+                print("Conversion successful!")
             except Exception as e:
-                return f"שגיאה ביצירת PDF (וודא ש-Word מותקן): {e}", 500
+                # במקרה של שגיאה (למשל מפתח שגוי), נחזיר הודעת שגיאה ברורה
+                return f"שגיאה ביצירת PDF: {e}. וודא שהכנסת מפתח API תקין.", 500
 
         # עדכון גוגל שיטס ושמירה בדרייב
         update_google_sheet_with_file(project_name, meeting_subject, date_str, final_file_path)
